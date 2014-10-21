@@ -1,0 +1,142 @@
+--分区维护函数
+CREATE OR REPLACE FUNCTION pcrm.Fn_Pcrm_Add_Partition(deal_date varchar(8))
+  RETURNS void AS
+$BODY$ 
+/*======================================================
+        *  函数名称:fn_pcrm_add_partition
+        *  函数功能:每天自动维护分区
+        *  作    者:Qiuxg
+        *  创建时间:2014/10/20 10:16:44
+        *  修改人:
+        *  修改时间:
+        *  最后修改时间:
+*=====================================================*/
+
+/*
+--创建维护分区配置表
+CREATE TABLE PCRM.PCRM_ADD_PARTITION (
+ID INT                    --序号
+,OWNER VARCHAR(10)        --模式名
+,TABLENAME VARCHAR(255)   --表名
+,CYCLE CHAR(1)            --周期 D:日 M:月
+,STATE CHAR(1)            --状态 1:有效 0:无效
+,SAVE_TIME NUMERIC        --保存时间,时间单位为CYCLE字段值,值为0时,不删除历史分区
+)
+;
+*/
+
+--定义变量 
+  DECLARE v_partition_count numeric(10);
+  DECLARE v_next_day character varying(8);
+  DECLARE v_history_day character varying(8);
+  DECLARE v_sql character varying(2000);
+  DECLARE v_flag NUMERIC;
+  DECLARE v_owner varchar(10);
+  DECLARE v_tablename VARCHAR(255);
+  DECLARE v_cycle char(1);
+  DECLARE v_save_time NUMERIC;
+  --定义游标
+  --DECLARE TYPE v_curtype IS REF CURSOR;
+  DECLARE cur_cfg refcursor;
+BEGIN
+--打开游标
+   OPEN cur_cfg FOR    --打开游标
+   SELECT lower(OWNER) ,lower(TABLENAME) ,CYCLE ,SAVE_TIME 
+   FROM PCRM.PCRM_ADD_PARTITION
+   WHERE STATE='1'
+   ORDER BY CYCLE;
+   --循环
+   LOOP
+   fetch cur_cfg into v_owner, v_tablename, v_cycle, v_save_time;
+   EXIT WHEN NOT FOUND;
+	--处理日分区
+	if v_cycle = 'D' then
+		select to_char(cast(deal_date as date) + 1, 'yyyymmdd')  into v_next_day;
+		select count(*) into v_partition_count from pg_partitions where schemaname = v_owner
+			    and tablename = v_tablename AND PARTITIONNAME = 'p'||deal_date;
+		--RAISE NOTICE 'partition_count:%', v_partition_count;
+		--判断分区是否存在
+		if v_partition_count = 1 then
+			v_sql := 'ALTER TABLE '|| v_owner || '.' ||v_tablename||' DROP PARTITION p'|| deal_date;
+			--RAISE NOTICE 'Drop SQL:%', v_sql;
+			execute v_sql;						      
+		end if;--结束判断分区是否存在
+					    
+		v_sql := 'alter table ' || v_owner || '.' || v_tablename ||' add partition p' || deal_date || 
+			' START ( ''' ||deal_date || '''::date) END (  ''' || v_next_day || '''::date )';
+		--RAISE NOTICE 'SQL:%', v_sql;
+		execute v_sql;
+				   
+		--处理历史分区
+		--判断是否要处理历史分区
+		if v_save_time <> 0 then
+			v_sql := 'select to_char(cast('''||deal_date||''' as date) - interval '''||v_save_time||' day'', ''yyyymmdd'')';
+			--RAISE NOTICE 'SEL hISTORY SQL:%', v_sql;
+			execute v_sql INTO v_history_day;
+			select count(*) into v_partition_count from pg_partitions where schemaname = v_owner
+					    and tablename = v_tablename AND PARTITIONNAME = 'p'||v_history_day;
+			--RAISE NOTICE 'partition_count:%', v_partition_count;
+					    
+			--判断历史分区是否存在
+			if v_partition_count = 1 then
+				v_sql := 'ALTER TABLE '|| v_owner || '.' ||v_tablename||' DROP PARTITION p'|| v_history_day;
+				--RAISE NOTICE 'Drop SQL:%', v_sql;
+				execute v_sql;						      
+			end if;--判断历史分区是否存在
+							    
+		end if;--判断是否要处理历史分区
+								  				
+	--处理月分区
+	elsif v_cycle='M' then
+		select EXTRACT(DAY from cast(deal_date as date) + 1) into v_flag;
+		--RAISE NOTICE 'v_flag:%', v_flag;
+		--判断是否月末
+		 if v_flag = 1 then
+			select to_char(cast(deal_date as date) + 1, 'yyyymmdd') into v_next_day;
+			select count(*) into v_partition_count from pg_partitions where schemaname = v_owner
+					    and tablename = v_tablename AND PARTITIONNAME = 'p'||deal_date;
+			--RAISE NOTICE 'partition_count:%', v_partition_count;
+			--判断分区是否存在
+			if v_partition_count = 1 then
+				v_sql := 'ALTER TABLE '|| v_owner || '.' ||v_tablename||' DROP PARTITION p'|| deal_date;
+				--RAISE NOTICE 'Drop SQL:%', v_sql;
+				execute v_sql;						      
+			end if;--判断分区是否存在
+							    
+			v_sql := 'alter table ' || v_owner || '.' || v_tablename ||' add partition p' || deal_date || 
+				' START ( ''' ||deal_date || '''::date) END (  ''' || v_next_day || '''::date )';
+			--RAISE NOTICE 'SQL:%', v_sql;
+			execute v_sql;
+						   
+			--处理历史分区
+			--判断是否处理历史分区
+			if v_save_time <> 0 then
+				v_sql := 'select to_char(cast('''||deal_date||''' as date) - interval '''||v_save_time||' month'', ''yyyymmdd'')';
+				--RAISE NOTICE 'SEL hISTORY SQL:%', v_sql;
+				execute v_sql INTO v_history_day;
+				select count(*) into v_partition_count from pg_partitions where schemaname = v_owner
+							    and tablename = v_tablename AND PARTITIONNAME = 'p'||v_history_day;
+				--RAISE NOTICE 'partition_count:%', v_partition_count;
+				--判断历史分区是否存在
+				if v_partition_count = 1 then
+					v_sql := 'ALTER TABLE '|| v_owner || '.' ||v_tablename||' DROP PARTITION p'|| v_history_day;
+					--RAISE NOTICE 'Drop SQL:%', v_sql;
+					execute v_sql;	
+										      
+				end if;--判断历史分区是否存在
+									    
+			end if;--判断是否处理历史分区
+							  
+		end if;--判断是否月末
+		      
+	end if;--处理周期结束
+		   
+   end loop;--循环
+   
+   CLOSE cur_cfg;--关闭游标
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION pcrm.fn_pcrm_add_partition(deal_date varchar(8))
+  OWNER TO pcrm;
